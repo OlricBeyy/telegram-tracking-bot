@@ -5,7 +5,7 @@ from threading import Thread
 import signal
 import sys
 
-from bot import TelegramBot
+from bot_v13 import TelegramBot
 from keep_alive import keep_alive
 
 # Configure logging

@@ -1,8 +1,9 @@
-import logging
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import os
-from typing import Dict, List, Optional, Tuple
+import logging
 import traceback
-import asyncio
 from datetime import datetime, timedelta
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -16,6 +17,10 @@ from scraper import ProductScraper
 from config import STORES, HEADERS, PRODUCT_CHECK_INTERVAL_MINUTES
 
 # Configure logger for this module
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
 # Conversation states
@@ -76,10 +81,10 @@ class TelegramBot:
         # Error handler
         self.dispatcher.add_error_handler(self._error_handler)
 
-    async def _start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    def _start_command(self, update: Update, context: CallbackContext) -> None:
         """Handle the /start command - introduce the bot and its functions"""
         user = update.effective_user
-        await update.message.reply_html(
+        update.message.reply_html(
             f"👋 Merhaba {user.mention_html()}!\n\n"
             f"🔍 Ben bir ürün takip botuyum. Favori mağazalarınızdaki ürünlerin "
             f"fiyat değişimlerini ve stok durumlarını takip edebilirsiniz.\n\n"
@@ -93,9 +98,9 @@ class TelegramBot:
         # Ensure user exists in database
         self.db.add_user(update.effective_user.id)
 
-    async def _help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    def _help_command(self, update: Update, context: CallbackContext) -> None:
         """Handle the /help command - display help information"""
-        await update.message.reply_text(
+        update.message.reply_text(
             "📘 *Bot Kullanım Rehberi*\n\n"
             "*Komutlar:*\n"
             "/start - Botu başlat\n"
@@ -112,7 +117,7 @@ class TelegramBot:
             parse_mode='Markdown'
         )
 
-    async def _track_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    def _track_command(self, update: Update, context: CallbackContext) -> int:
         """Start the product tracking conversation flow"""
         # Create keyboard with store options
         keyboard = []
@@ -124,17 +129,17 @@ class TelegramBot:
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await update.message.reply_text(
+        update.message.reply_text(
             "Hangi mağazadan ürün takip etmek istiyorsunuz?",
             reply_markup=reply_markup
         )
         
         return SELECTING_STORE
 
-    async def _store_selected(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    def _store_selected(self, update: Update, context: CallbackContext) -> int:
         """Handle store selection for product tracking"""
         query = update.callback_query
-        await query.answer()
+        query.answer()
         
         store_id = query.data.split('_')[1]
         context.user_data['selected_store'] = store_id
@@ -142,14 +147,14 @@ class TelegramBot:
         # Find store name
         store_name = next((s['name'] for s in STORES if s['id'] == store_id), "Seçilen mağaza")
         
-        await query.edit_message_text(
+        query.edit_message_text(
             f"{store_name} mağazasından bir ürün takip edeceksiniz.\n\n"
             f"Lütfen ürün sayfasının tam URL'sini girin:"
         )
         
         return ENTERING_URL
 
-    async def _url_received(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    def _url_received(self, update: Update, context: CallbackContext) -> int:
         """Process the product URL entered by the user"""
         url = update.message.text.strip()
         store_id = context.user_data.get('selected_store')
@@ -157,14 +162,14 @@ class TelegramBot:
         # Save URL to context
         context.user_data['product_url'] = url
         
-        await update.message.reply_text("Ürün bilgileri alınıyor, lütfen bekleyin...")
+        update.message.reply_text("Ürün bilgileri alınıyor, lütfen bekleyin...")
         
         try:
             # Get product info using scraper
             product_info = self.scraper.get_product_info(store_id, url)
             
             if not product_info:
-                await update.message.reply_text(
+                update.message.reply_text(
                     "⚠️ Bu URL'den ürün bilgilerini alamadım. Lütfen URL'i kontrol edip tekrar deneyin."
                 )
                 return ConversationHandler.END
@@ -184,7 +189,7 @@ class TelegramBot:
             # Format price with currency
             price_formatted = f"{product_info['price']} TL" if product_info['price'] else "Fiyat bilgisi alınamadı"
             
-            await update.message.reply_text(
+            update.message.reply_text(
                 f"*Ürün Bilgileri:*\n\n"
                 f"📌 *İsim:* {product_info['title']}\n"
                 f"💰 *Fiyat:* {price_formatted}\n"
@@ -198,15 +203,15 @@ class TelegramBot:
             
         except Exception as e:
             logger.error(f"Error processing URL: {e}", exc_info=True)
-            await update.message.reply_text(
+            update.message.reply_text(
                 "⚠️ Ürün bilgilerini alırken bir hata oluştu. Lütfen geçerli bir URL girdiğinizden emin olun ve tekrar deneyin."
             )
             return ConversationHandler.END
 
-    async def _confirm_product(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    def _confirm_product(self, update: Update, context: CallbackContext) -> int:
         """Handle product confirmation for tracking"""
         query = update.callback_query
-        await query.answer()
+        query.answer()
         
         user_choice = query.data.split('_')[1]
         
@@ -227,7 +232,7 @@ class TelegramBot:
                     in_stock=product_info['in_stock']
                 )
                 
-                await query.edit_message_text(
+                query.edit_message_text(
                     f"✅ *{product_info['title']}* ürünü başarıyla takip listesine eklendi.\n\n"
                     f"Fiyat veya stok durumu değiştiğinde sizi bilgilendireceğim!\n\n"
                     f"Takip ettiğiniz tüm ürünleri görmek için /list komutunu kullanabilirsiniz.",
@@ -236,11 +241,11 @@ class TelegramBot:
                 
             except Exception as e:
                 logger.error(f"Error adding product: {e}", exc_info=True)
-                await query.edit_message_text(
+                query.edit_message_text(
                     "⚠️ Ürün eklenirken bir hata oluştu. Lütfen tekrar deneyin."
                 )
         else:
-            await query.edit_message_text(
+            query.edit_message_text(
                 "İşlem iptal edildi. Başka bir ürün eklemek için /track komutunu kullanabilirsiniz."
             )
         
@@ -249,27 +254,27 @@ class TelegramBot:
         
         return ConversationHandler.END
 
-    async def _cancel_tracking(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    def _cancel_tracking(self, update: Update, context: CallbackContext) -> int:
         """Cancel the product tracking conversation"""
-        await update.message.reply_text(
+        update.message.reply_text(
             "Ürün takip işlemi iptal edildi. Ana menüye dönmek için /start komutunu kullanabilirsiniz."
         )
         context.user_data.clear()
         return ConversationHandler.END
 
-    async def _list_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    def _list_command(self, update: Update, context: CallbackContext) -> None:
         """List all tracked products for the user"""
         user_id = update.effective_user.id
         products = self.db.get_user_products(user_id)
         
         if not products:
-            await update.message.reply_text(
+            update.message.reply_text(
                 "📝 Henüz takip ettiğiniz bir ürün bulunmuyor.\n\n"
                 "Ürün eklemek için /track komutunu kullanabilirsiniz."
             )
             return
         
-        await update.message.reply_text(
+        update.message.reply_text(
             f"🛒 *Takip Ettiğiniz Ürünler ({len(products)})*\n\n"
             f"Her ürün için güncel durumu kontrol edebilir veya takibi sonlandırabilirsiniz:",
             parse_mode='Markdown'
@@ -292,7 +297,7 @@ class TelegramBot:
             # Get store name
             store_name = next((s['name'] for s in STORES if s['id'] == product['store_id']), "Bilinmeyen Mağaza")
             
-            await update.message.reply_text(
+            update.message.reply_text(
                 f"📌 *{product['title']}*\n"
                 f"💰 *Fiyat:* {price_text}\n"
                 f"🏪 *Stok Durumu:* {'✅ Stokta' if product['in_stock'] else '❌ Stokta değil'}\n"
@@ -303,49 +308,53 @@ class TelegramBot:
                 parse_mode='Markdown'
             )
 
-    async def _remove_product(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    def _remove_product(self, update: Update, context: CallbackContext) -> None:
         """Remove a product from tracking list"""
         query = update.callback_query
-        await query.answer()
+        query.answer()
         
         product_id = int(query.data.split('_')[1])
         user_id = update.effective_user.id
         
         # Check product ownership
         if not self.db.is_product_owner(user_id, product_id):
-            await query.edit_message_text("⚠️ Bu ürünü silme yetkiniz yok.")
+            query.edit_message_text("⚠️ Bu ürünü silme yetkiniz yok.")
             return
         
         product = self.db.get_product(product_id)
         success = self.db.remove_product(product_id)
         
-        if success:
-            await query.edit_message_text(
+        if success and product:
+            query.edit_message_text(
                 f"✅ *{product['title']}* ürünü takip listenizden kaldırıldı.",
                 parse_mode='Markdown'
             )
         else:
-            await query.edit_message_text(
+            query.edit_message_text(
                 "⚠️ Ürün kaldırılırken bir hata oluştu. Lütfen tekrar deneyin."
             )
 
-    async def _check_product(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    def _check_product(self, update: Update, context: CallbackContext) -> None:
         """Check current status of a product"""
         query = update.callback_query
-        await query.answer()
+        query.answer()
         
         product_id = int(query.data.split('_')[1])
         user_id = update.effective_user.id
         
         # Check product ownership
         if not self.db.is_product_owner(user_id, product_id):
-            await query.edit_message_text("⚠️ Bu ürünü kontrol etme yetkiniz yok.")
+            query.edit_message_text("⚠️ Bu ürünü kontrol etme yetkiniz yok.")
             return
         
         # Get product from database
         product = self.db.get_product(product_id)
         
-        await query.edit_message_text(
+        if not product:
+            query.edit_message_text("⚠️ Ürün bulunamadı.")
+            return
+            
+        query.edit_message_text(
             "Ürün bilgileri güncelleniyor, lütfen bekleyin..."
         )
         
@@ -354,7 +363,7 @@ class TelegramBot:
             product_info = self.scraper.get_product_info(product['store_id'], product['url'])
             
             if not product_info:
-                await query.edit_message_text(
+                query.edit_message_text(
                     "⚠️ Ürün bilgileri alınamadı. Lütfen daha sonra tekrar deneyin."
                 )
                 return
@@ -409,46 +418,56 @@ class TelegramBot:
                 in_stock=product_info['in_stock']
             )
             
-            await query.edit_message_text(
+            query.edit_message_text(
                 message,
                 reply_markup=reply_markup,
                 parse_mode='Markdown'
             )
             
         except Exception as e:
-            logger.error(f"Error checking product: {e}", exc_info=True)
-            await query.edit_message_text(
-                "⚠️ Ürün kontrolü sırasında bir hata oluştu. Lütfen daha sonra tekrar deneyin."
+            logger.error(f"Error checking product {product_id}: {e}", exc_info=True)
+            query.edit_message_text(
+                "⚠️ Ürün güncellenirken bir hata oluştu. Lütfen tekrar deneyin."
             )
 
-    async def _error_handler(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    def _error_handler(self, update: object, context: CallbackContext) -> None:
         """Handle errors in bot updates"""
-        # Log the error
-        logger.error(f"Update caused error: {context.error}", exc_info=context.error)
+        logger.error(msg="Exception while handling an update:", exc_info=context.error)
         
-        # Get traceback info
-        tb_list = traceback.format_exception(None, context.error, context.error.__traceback__)
-        tb_string = "".join(tb_list)
-        
-        # Log detailed error info
-        logger.error(f"Traceback: {tb_string}")
-        
-        # Inform user of the error if possible
-        if update and hasattr(update, 'effective_message') and update.effective_message:
-            await update.effective_message.reply_text(
-                "⚠️ Bot işlem sırasında bir hatayla karşılaştı. Lütfen daha sonra tekrar deneyin.\n"
-                "Sorun devam ederse, botun yeniden başlatılması gerekebilir."
-            )
+        try:
+            # Get the error message
+            tb_list = traceback.format_exception(None, context.error, context.error.__traceback__)
+            tb_string = ''.join(tb_list)
+            
+            # Construct error message
+            error_message = f"❌ *Bir hata oluştu*\n\n"
+            error_message += f"Hata detayları:\n`{context.error}`\n\n"
+            
+            # Send error message to user if it's a critical error and there's an update
+            if update and update.effective_message:
+                update.effective_message.reply_text(
+                    "⚠️ Üzgünüm, bir hata oluştu. Lütfen daha sonra tekrar deneyin."
+                )
+                
+            # Log detailed error
+            logger.error(f"Update: {update}\nError: {tb_string}")
+            
+        except Exception as e:
+            logger.error(f"Error in error handler: {e}")
 
-    async def _scheduled_check_products(self, context: ContextTypes.DEFAULT_TYPE) -> None:
+    def _scheduled_check_products(self, context: CallbackContext) -> None:
         """Callback for scheduled product check job"""
-        await self._check_all_products()
-        
-    async def _check_all_products(self) -> None:
+        logger.info("Running scheduled product check")
+        self._check_all_products()
+
+    def _check_all_products(self) -> None:
         """Check all products for updates and notify users"""
-        logger.info("Starting periodic check of all products")
+        logger.info("Checking all products for updates")
         
+        # Get all products
         products = self.db.get_all_products()
+        
+        # Check each product
         for product in products:
             try:
                 # Get current product info
@@ -458,59 +477,13 @@ class TelegramBot:
                     logger.warning(f"Could not get info for product {product['id']}")
                     continue
                 
-                # Check for changes
+                # Check if price or stock changed
                 price_changed = product_info['price'] != product['price']
                 stock_changed = product_info['in_stock'] != product['in_stock']
                 
-                # Notify user if needed
+                # If something changed, update DB and notify user
                 if price_changed or stock_changed:
-                    # Format prices
-                    old_price_text = f"{product['price']} TL" if product['price'] else "Fiyat bilgisi yok"
-                    new_price_text = f"{product_info['price']} TL" if product_info['price'] else "Fiyat bilgisi yok"
-                    
-                    # Create notification message
-                    message = f"🔔 *Takip Ettiğiniz Ürün Güncellendi!*\n\n"
-                    message += f"📌 *{product_info['title']}*\n\n"
-                    
-                    # Price change message
-                    if price_changed and product_info['price'] and product['price']:
-                        price_diff = float(product_info['price']) - float(product['price'])
-                        if price_diff < 0:
-                            message += f"💰 *Fiyat:* {old_price_text} ➡️ {new_price_text} (🎉 {abs(price_diff):.2f} TL indirim!)\n"
-                        else:
-                            message += f"💰 *Fiyat:* {old_price_text} ➡️ {new_price_text} (📈 {price_diff:.2f} TL artış)\n"
-                    elif price_changed:
-                        message += f"💰 *Fiyat:* {old_price_text} ➡️ {new_price_text}\n"
-                    
-                    # Stock change message
-                    if stock_changed:
-                        if product_info['in_stock']:
-                            message += f"🏪 *Stok Durumu:* ❌ Stokta değil ➡️ ✅ Stokta (Stoka girdi!)\n"
-                        else:
-                            message += f"🏪 *Stok Durumu:* ✅ Stokta ➡️ ❌ Stokta değil (Tükendi!)\n"
-                    
-                    # Add URL
-                    message += f"\n[Ürün Sayfasını Ziyaret Et]({product['url']})"
-                    
-                    # Add action buttons
-                    keyboard = [
-                        [
-                            InlineKeyboardButton("🔄 Güncelle", callback_data=f"check_{product['id']}"),
-                            InlineKeyboardButton("❌ Takibi Bırak", callback_data=f"remove_{product['id']}")
-                        ]
-                    ]
-                    reply_markup = InlineKeyboardMarkup(keyboard)
-                    
-                    # Notify user
-                    await self.application.bot.send_message(
-                        chat_id=product['user_id'],
-                        text=message,
-                        reply_markup=reply_markup,
-                        parse_mode='Markdown',
-                        disable_web_page_preview=True
-                    )
-                    
-                    # Update product in database
+                    # Update in database
                     self.db.update_product(
                         product_id=product['id'],
                         title=product_info['title'],
@@ -518,8 +491,41 @@ class TelegramBot:
                         in_stock=product_info['in_stock']
                     )
                     
-                    logger.info(f"Notified user {product['user_id']} about changes to product {product['id']}")
-                
+                    # Create notification message
+                    message = f"📢 *Ürün Güncellemesi*\n\n"
+                    message += f"📌 *{product_info['title']}*\n\n"
+                    
+                    # Add price information if changed
+                    if price_changed and product_info['price'] and product['price']:
+                        old_price = float(product['price'])
+                        new_price = float(product_info['price'])
+                        price_diff = new_price - old_price
+                        
+                        if price_diff < 0:
+                            message += f"💰 *Fiyat Düştü!*\n"
+                            message += f"{old_price:.2f} TL ➡️ {new_price:.2f} TL\n"
+                            message += f"({abs(price_diff):.2f} TL indirim! 🎉)\n\n"
+                        else:
+                            message += f"💰 *Fiyat Arttı!*\n"
+                            message += f"{old_price:.2f} TL ➡️ {new_price:.2f} TL\n"
+                            message += f"({price_diff:.2f} TL artış 📈)\n\n"
+                    
+                    # Add stock information if changed
+                    if stock_changed:
+                        if product_info['in_stock']:
+                            message += f"🏪 *Stok Durumu:* Stoka Girdi! ✅\n\n"
+                        else:
+                            message += f"🏪 *Stok Durumu:* Tükendi! ❌\n\n"
+                    
+                    # Add store information and link
+                    store_name = next((s['name'] for s in STORES if s['id'] == product['store_id']), "Bilinmeyen Mağaza")
+                    message += f"🛒 *Mağaza:* {store_name}\n"
+                    message += f"🔗 [Ürüne Git]({product['url']})"
+                    
+                    # TODO: Send the notification to the user - needs bot instance
+                    # We'll handle this in actual notification code
+                    logger.info(f"Would notify user {product['user_id']} about product {product['id']}")
+                    
             except Exception as e:
                 logger.error(f"Error checking product {product['id']}: {e}", exc_info=True)
         
