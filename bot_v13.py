@@ -84,6 +84,8 @@ class TelegramBot:
                 ]
             },
             fallbacks=[CommandHandler("cancel", self._cancel_tracking)],
+            per_message=False,
+            per_chat=True
         )
         self.dispatcher.add_handler(conv_handler)
         

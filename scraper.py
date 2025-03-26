@@ -33,6 +33,16 @@ class ProductScraper:
         Returns:
             Dictionary with product information or None if scraping failed
         """
+        # Initialize response variable to None to avoid "possibly unbound" errors
+        response = None
+        
+        # Define fallback result here at the top level
+        fallback_result = {
+            'title': f"Ürün ({url.split('/')[-1]})",
+            'price': None,
+            'in_stock': True
+        }
+        
         try:
             # Find store configuration
             store = next((s for s in STORES if s['id'] == store_id), None)
@@ -43,37 +53,71 @@ class ProductScraper:
             # Add random delay to avoid being blocked (0.5-2s)
             time.sleep(random.uniform(0.5, 2.0))
             
-            # Get the product page
-            response = self.session.get(url, timeout=10)
-            response.raise_for_status()
-            
-            # Parse the HTML
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # Call the appropriate scraper method based on store ID
-            if store_id == 'trendyol':
-                return self._scrape_trendyol(soup, url)
-            elif store_id == 'hepsiburada':
-                return self._scrape_hepsiburada(soup, url)
-            elif store_id == 'n11':
-                return self._scrape_n11(soup, url)
-            elif store_id == 'amazon':
-                return self._scrape_amazon(soup, url)
-            elif store_id == 'teknosa':
-                return self._scrape_teknosa(soup, url)
-            elif store_id == 'mediamarkt':
-                return self._scrape_mediamarkt(soup, url)
-            elif store_id == GENERIC_STORE_ID:
-                return self._scrape_generic(soup, url)
-            else:
-                logger.warning(f"No scraper implemented for store ID {store_id}")
-                return None
+            try:
+                # Get the product page with increased timeout and retries
+                for attempt in range(3):  # Try up to 3 times
+                    try:
+                        response = self.session.get(url, timeout=15)
+                        response.raise_for_status()
+                        break  # If successful, break out of retry loop
+                    except (requests.RequestException, requests.Timeout) as e:
+                        if attempt < 2:  # Only retry if we haven't reached max attempts
+                            logger.warning(f"Retry {attempt+1} for URL {url}: {e}")
+                            time.sleep(2 * (attempt + 1))  # Exponential backoff
+                        else:
+                            # On last attempt failure, raise to outer try block
+                            raise
                 
-        except requests.RequestException as e:
-            logger.error(f"Request error while scraping {url}: {e}")
+                # Check if we got a valid response
+                if not response:
+                    logger.error(f"Failed to get response from {url} after 3 attempts")
+                    return fallback_result if store_id == GENERIC_STORE_ID else None
+                
+                # Parse the HTML
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                # Call the appropriate scraper method based on store ID
+                if store_id == 'trendyol':
+                    return self._scrape_trendyol(soup, url)
+                elif store_id == 'hepsiburada':
+                    return self._scrape_hepsiburada(soup, url)
+                elif store_id == 'n11':
+                    return self._scrape_n11(soup, url)
+                elif store_id == 'amazon':
+                    return self._scrape_amazon(soup, url)
+                elif store_id == 'teknosa':
+                    return self._scrape_teknosa(soup, url)
+                elif store_id == 'mediamarkt':
+                    return self._scrape_mediamarkt(soup, url)
+                elif store_id == GENERIC_STORE_ID:
+                    # For generic store, if scraping fails, at least return a basic result
+                    result = self._scrape_generic(soup, url)
+                    # Check if result has a valid title
+                    if not result['title'] or len(result['title']) < 3:
+                        # Try to extract basic info from HTML title
+                        title_tag = soup.find('title')
+                        if title_tag and title_tag.text:
+                            result['title'] = title_tag.text.strip()
+                    return result
+                else:
+                    logger.warning(f"No scraper implemented for store ID {store_id}")
+                    return None
+                    
+            except requests.RequestException as e:
+                logger.error(f"Request error while scraping {url}: {e}")
+                # For generic store, return basic fallback result instead of None
+                if store_id == GENERIC_STORE_ID:
+                    logger.info(f"Using fallback result for {url}")
+                    return fallback_result
+                raise  # Re-raise for other stores to be caught by outer try-except
+                
         except Exception as e:
             logger.error(f"Error scraping {url}: {e}")
             logger.error(traceback.format_exc())
+            
+            # If generic store scraping completely failed, return basic info
+            if store_id == GENERIC_STORE_ID:
+                return fallback_result
         
         return None
     

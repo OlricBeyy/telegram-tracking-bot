@@ -51,11 +51,12 @@ def run_bot():
 
 if __name__ == "__main__":
     # Check if Telegram token is set
-    if not os.environ.get("TELEGRAM_TOKEN"):
+    telegram_token = os.environ.get("TELEGRAM_TOKEN")
+    if not telegram_token:
         logger.error("TELEGRAM_TOKEN environment variable is not set.")
         sys.exit(1)
     else:
-        logger.info(f"TELEGRAM_TOKEN is set, length: {len(os.environ.get('TELEGRAM_TOKEN'))}")
+        logger.info(f"TELEGRAM_TOKEN is set, length: {len(telegram_token)}")
     
     # Log the environment variables
     logger.info("Starting bot application...")
