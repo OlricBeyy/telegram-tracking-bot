@@ -55,6 +55,7 @@ class TelegramBot:
         self.dispatcher.add_handler(CommandHandler("start", self._start_command))
         self.dispatcher.add_handler(CommandHandler("help", self._help_command))
         self.dispatcher.add_handler(CommandHandler("list", self._list_command))
+        self.dispatcher.add_handler(CommandHandler("reboot", self._reboot_command))
         
         # Track product conversation flow
         conv_handler = ConversationHandler(
@@ -91,12 +92,39 @@ class TelegramBot:
             f"🛠 Komutlar:\n"
             f"/track - Yeni bir ürün takibi başlat\n"
             f"/list - Takip ettiğiniz ürünleri listele\n"
-            f"/help - Yardım menüsü\n\n"
+            f"/help - Yardım menüsü\n"
+            f"/reboot - Botu yeniden başlat\n\n"
             f"Hadi başlayalım! Takip etmek istediğiniz bir ürün için /track komutunu kullanın."
         )
         
         # Ensure user exists in database
         self.db.add_user(update.effective_user.id)
+        
+    def _reboot_command(self, update: Update, context: CallbackContext) -> None:
+        """Handle the /reboot command - restart the bot when there are issues"""
+        user = update.effective_user
+        
+        # Only allow admins to reboot the bot (you can modify this restriction)
+        update.message.reply_text(
+            "🔄 Bot yeniden başlatılıyor...\n\n"
+            "Bu işlem birkaç saniye sürebilir. Lütfen bekleyin."
+        )
+        
+        logger.info(f"Bot reboot requested by user {user.id}")
+        
+        # Schedule the reboot to occur after sending the message
+        def _do_reboot():
+            try:
+                self.reboot()
+                logger.info("Bot rebooted successfully")
+            except Exception as e:
+                logger.error(f"Error during reboot: {e}", exc_info=True)
+        
+        # Run the reboot in a separate thread to avoid blocking
+        import threading
+        reboot_thread = threading.Thread(target=_do_reboot)
+        reboot_thread.daemon = True
+        reboot_thread.start()
 
     def _help_command(self, update: Update, context: CallbackContext) -> None:
         """Handle the /help command - display help information"""
@@ -106,7 +134,8 @@ class TelegramBot:
             "/start - Botu başlat\n"
             "/track - Yeni bir ürün takibi başlat\n"
             "/list - Takip ettiğiniz ürünleri listele\n"
-            "/help - Bu yardım mesajını göster\n\n"
+            "/help - Bu yardım mesajını göster\n"
+            "/reboot - Botu yeniden başlat (sorun yaşadığınızda)\n\n"
             "*Ürün Takibi Nasıl Çalışır:*\n"
             "1. /track komutunu kullanın\n"
             "2. Listeden bir mağaza seçin\n"
@@ -554,3 +583,10 @@ class TelegramBot:
         # Stop the bot
         if self.updater:
             self.updater.stop()
+            
+    def reboot(self):
+        """Reboot the bot by stopping and starting again"""
+        logger.info("Rebooting the Telegram bot")
+        self.stop()
+        self.start()
+        logger.info("Telegram bot rebooted successfully")
