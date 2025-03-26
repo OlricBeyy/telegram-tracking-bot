@@ -1,9 +1,11 @@
 import logging
 import re
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, List
 import traceback
 import time
 import random
+import json
+from urllib.parse import urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -21,6 +23,27 @@ class ProductScraper:
         self.headers = headers
         self.session = requests.Session()
         self.session.headers.update(headers)
+        
+        # Add more realistic browser fingerprint to avoid bot detection
+        self.session.headers.update({
+            'sec-ch-ua': '"Google Chrome";v="111", "Not(A:Brand";v="8", "Chromium";v="111"',
+            'sec-ch-ua-mobile': '?0',
+            'sec-ch-ua-platform': '"Windows"',
+            'sec-fetch-dest': 'document',
+            'sec-fetch-mode': 'navigate',
+            'sec-fetch-site': 'none',
+            'sec-fetch-user': '?1',
+            'upgrade-insecure-requests': '1',
+        })
+        
+        # Random user agents to rotate and avoid detection
+        self.user_agents = [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.4 Safari/605.1.15',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36 Edg/111.0.1661.54',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/111.0',
+            'Mozilla/5.0 (iPhone; CPU iPhone OS 16_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/111.0.5563.101 Mobile/15E148 Safari/604.1'
+        ]
     
     def get_product_info(self, store_id: str, url: str) -> Optional[Dict[str, Any]]:
         """
@@ -57,7 +80,29 @@ class ProductScraper:
                 # Get the product page with increased timeout and retries
                 for attempt in range(3):  # Try up to 3 times
                     try:
-                        response = self.session.get(url, timeout=15)
+                        # Rotate user agents to avoid detection
+                        self.session.headers['User-Agent'] = random.choice(self.user_agents)
+                        
+                        # Add randomized delay to seem more human-like
+                        time.sleep(random.uniform(1.0, 3.0))
+                        
+                        # Add referer for some sites that check this
+                        parsed_url = urlparse(url)
+                        base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
+                        referer = f"{base_url}/"
+                        self.session.headers['Referer'] = referer
+                        
+                        # Set cookies and handle cloudflare if needed
+                        response = self.session.get(url, timeout=20, allow_redirects=True)
+                        
+                        # Check for anti-bot challenges and adapt
+                        if "captcha" in response.text.lower() or "robot" in response.text.lower():
+                            logger.warning(f"Anti-bot measures detected on {url}")
+                            # Use different headers and wait longer
+                            time.sleep(random.uniform(3.0, 5.0))
+                            self.session.headers['User-Agent'] = random.choice(self.user_agents)
+                            response = self.session.get(url, timeout=20)
+                        
                         response.raise_for_status()
                         break  # If successful, break out of retry loop
                     except (requests.RequestException, requests.Timeout) as e:
@@ -394,89 +439,202 @@ class ProductScraper:
             'in_stock': False
         }
         
-        # Try to find a title - look for common patterns in e-commerce sites
-        title_candidates = [
-            soup.select_one('h1'),  # Most sites use h1 for product title
-            soup.select_one('[class*="title" i]'),  # Classes containing "title"
-            soup.select_one('[class*="product-name" i]'),  # Classes containing "product-name"
-            soup.select_one('[class*="product" i]'),  # Classes containing "product"
-            soup.select_one('title')  # Last resort: use page title
-        ]
-        
-        for candidate in title_candidates:
-            if candidate and candidate.text.strip():
-                result['title'] = candidate.text.strip()
-                break
-        
-        # If no title found, use URL as fallback
-        if not result['title']:
-            from urllib.parse import urlparse
-            parsed_url = urlparse(url)
-            path_parts = parsed_url.path.split('/')
-            # Try to get the last meaningful part of the path
-            for part in reversed(path_parts):
-                if part and part not in ['', '.html', '.htm']:
-                    result['title'] = part.replace('-', ' ').replace('_', ' ').capitalize()
+        # First try JSON-LD data which is more reliable and structured
+        json_ld_data = None
+        script_tags = soup.find_all('script', type='application/ld+json')
+        for script in script_tags:
+            try:
+                json_data = json.loads(script.string)
+                # Check if it's product data
+                if isinstance(json_data, dict) and (json_data.get('@type') == 'Product' or 
+                                                   (isinstance(json_data.get('@graph'), list) and 
+                                                    any(item.get('@type') == 'Product' for item in json_data.get('@graph', [])))):
+                    json_ld_data = json_data
                     break
-        
-        # Look for price - common patterns in e-commerce sites
-        price_candidates = [
-            soup.select_one('[class*="price" i]:not([class*="old" i]):not([class*="regular" i])'),  # Classes containing "price" but not "old" or "regular"
-            soup.select_one('[id*="price" i]'),  # IDs containing "price"
-            soup.select_one('[class*="current" i][class*="price" i]'),  # Classes containing both "current" and "price"
-            soup.select_one('meta[property="product:price:amount"]')  # Open Graph price meta tag
-        ]
-        
-        for candidate in price_candidates:
-            if candidate:
-                # If it's a meta tag, use the content attribute
-                if candidate.name == 'meta' and candidate.get('content'):
-                    price_text = candidate.get('content')
-                else:
-                    price_text = candidate.text
-                
-                if price_text:
-                    # Ensure price_text is a string
-                    if isinstance(price_text, str):
-                        result['price'] = self._clean_price(price_text)
-                        if result['price'] is not None:
+                elif isinstance(json_data, list):
+                    for item in json_data:
+                        if isinstance(item, dict) and item.get('@type') == 'Product':
+                            json_ld_data = item
                             break
+            except (json.JSONDecodeError, AttributeError):
+                continue
+                
+        # If JSON-LD data was found, extract product info
+        if json_ld_data:
+            logger.info(f"Found JSON-LD product data for {url}")
+            
+            # Extract from @graph if needed
+            if isinstance(json_ld_data, dict) and '@graph' in json_ld_data:
+                for item in json_ld_data.get('@graph', []):
+                    if isinstance(item, dict) and item.get('@type') == 'Product':
+                        json_ld_data = item
+                        break
+            
+            # Extract title
+            if json_ld_data.get('name'):
+                result['title'] = json_ld_data.get('name')
+                
+            # Extract price
+            if isinstance(json_ld_data.get('offers'), dict):
+                offers = json_ld_data.get('offers')
+                # Check price and availability
+                price = offers.get('price')
+                if price:
+                    try:
+                        result['price'] = float(price)
+                    except (ValueError, TypeError):
+                        # Try cleaning the price
+                        result['price'] = self._clean_price(str(price))
+                
+                # Check availability
+                availability = offers.get('availability', '').lower()
+                if availability:
+                    result['in_stock'] = 'instock' in availability or 'in stock' in availability
+            
+            # Handle multiple offers
+            elif isinstance(json_ld_data.get('offers'), list) and json_ld_data.get('offers'):
+                # Use the first offer
+                offers = json_ld_data.get('offers')[0]
+                if isinstance(offers, dict):
+                    price = offers.get('price')
+                    if price:
+                        try:
+                            result['price'] = float(price)
+                        except (ValueError, TypeError):
+                            result['price'] = self._clean_price(str(price))
+                    
+                    availability = offers.get('availability', '').lower()
+                    if availability:
+                        result['in_stock'] = 'instock' in availability or 'in stock' in availability
         
-        # Look for stock status
-        # Method 1: Look for out of stock indicators
-        out_of_stock_indicators = [
-            'out of stock',
-            'tükendi',
-            'sold out',
-            'stokta yok',
-            'stokta bulunmamaktadır',
-            'ürün geçici olarak temin edilemiyor'
-        ]
+        # If we didn't get all the information from JSON-LD, use the HTML parsing approach
+        if not result['title']:
+            # Try to find a title - look for common patterns in e-commerce sites
+            title_candidates = [
+                soup.select_one('h1'),  # Most sites use h1 for product title
+                soup.select_one('[class*="title" i]'),  # Classes containing "title"
+                soup.select_one('[class*="product-name" i]'),  # Classes containing "product-name"
+                soup.select_one('[class*="product" i]'),  # Classes containing "product"
+                soup.select_one('title')  # Last resort: use page title
+            ]
+            
+            for candidate in title_candidates:
+                if candidate and candidate.text.strip():
+                    result['title'] = candidate.text.strip()
+                    break
+            
+            # If no title found, use URL as fallback
+            if not result['title']:
+                from urllib.parse import urlparse
+                parsed_url = urlparse(url)
+                path_parts = parsed_url.path.split('/')
+                # Try to get the last meaningful part of the path
+                for part in reversed(path_parts):
+                    if part and part not in ['', '.html', '.htm']:
+                        result['title'] = part.replace('-', ' ').replace('_', ' ').capitalize()
+                        break
         
-        page_text = soup.get_text().lower()
-        out_of_stock = any(indicator in page_text for indicator in out_of_stock_indicators)
+        # Look for price in HTML if not found in JSON-LD
+        if result['price'] is None:
+            # Try to find meta tags with price information first (more reliable)
+            meta_price_tags = [
+                soup.select_one('meta[property="product:price:amount"]'),
+                soup.select_one('meta[property="og:price:amount"]'),
+                soup.select_one('meta[itemprop="price"]')
+            ]
+            
+            for tag in meta_price_tags:
+                if tag and tag.get('content'):
+                    price_text = tag.get('content')
+                    price = self._clean_price(price_text)
+                    if price is not None:
+                        result['price'] = price
+                        break
+            
+            # If still no price, look in the HTML
+            if result['price'] is None:
+                price_candidates = [
+                    soup.select_one('[class*="price" i]:not([class*="old" i]):not([class*="regular" i])'),
+                    soup.select_one('[id*="price" i]'),
+                    soup.select_one('[class*="current" i][class*="price" i]'),
+                    soup.select_one('[itemprop="price"]')
+                ]
+                
+                for candidate in price_candidates:
+                    if candidate:
+                        # If it has a content attribute, use that
+                        if candidate.get('content'):
+                            price_text = candidate.get('content')
+                        else:
+                            price_text = candidate.text
+                        
+                        if price_text:
+                            # Ensure price_text is a string
+                            if isinstance(price_text, str):
+                                result['price'] = self._clean_price(price_text)
+                                if result['price'] is not None:
+                                    break
         
-        # Method 2: Look for add to cart buttons
-        add_to_cart_candidates = [
-            soup.select_one('[class*="add-to-cart" i]'),
-            soup.select_one('[class*="addtocart" i]'),
-            soup.select_one('[class*="add-to-basket" i]'),
-            soup.select_one('[class*="addtobasket" i]'),
-            soup.select_one('[id*="add-to-cart" i]'),
-            soup.select_one('[id*="addtocart" i]')
-        ]
+        # Determine in-stock status if not already found
+        if 'in_stock' not in result or result['in_stock'] is None:
+            # Method 1: Look for out of stock indicators
+            out_of_stock_indicators = [
+                'out of stock',
+                'tükendi',
+                'sold out',
+                'stokta yok',
+                'stokta bulunmamaktadır',
+                'ürün geçici olarak temin edilemiyor',
+                'şu an için temin edilemiyor'
+            ]
+            
+            page_text = soup.get_text().lower()
+            out_of_stock = any(indicator in page_text for indicator in out_of_stock_indicators)
+            
+            # Method 2: Look for availability meta tags
+            availability_meta = soup.select_one('meta[property="product:availability"]') or soup.select_one('meta[itemprop="availability"]')
+            if availability_meta and availability_meta.get('content'):
+                availability_text = availability_meta.get('content').lower()
+                out_of_stock = out_of_stock or 'outofstock' in availability_text or 'out of stock' in availability_text
+            
+            # Method 3: Look for add to cart buttons
+            add_to_cart_candidates = [
+                soup.select_one('[class*="add-to-cart" i]'),
+                soup.select_one('[class*="addtocart" i]'),
+                soup.select_one('[class*="add-to-basket" i]'),
+                soup.select_one('[class*="addtobasket" i]'),
+                soup.select_one('[id*="add-to-cart" i]'),
+                soup.select_one('[id*="addtocart" i]')
+            ]
+            
+            # Also look for buttons/links with Turkish "Sepete Ekle" text
+            sepete_ekle_buttons = []
+            for button in soup.find_all(['button', 'a']):
+                if button.text and 'sepete ekle' in button.text.lower():
+                    sepete_ekle_buttons.append(button)
+            
+            add_to_cart_candidates.extend(sepete_ekle_buttons)
+            
+            has_add_to_cart = any(candidate is not None for candidate in add_to_cart_candidates)
+            
+            # If there's no clear out-of-stock message and there's an add to cart button, assume in stock
+            # If we see an out-of-stock message, definitely out of stock
+            # Otherwise, assume in stock if we found price information
+            if out_of_stock:
+                result['in_stock'] = False
+            elif has_add_to_cart:
+                result['in_stock'] = True
+            else:
+                # Fallback: if we found a price, assume it's in stock
+                result['in_stock'] = result['price'] is not None
         
-        has_add_to_cart = any(candidate is not None for candidate in add_to_cart_candidates)
-        
-        # If there's no clear out-of-stock message and there's an add to cart button, assume in stock
-        # If we see an out-of-stock message, definitely out of stock
-        # Otherwise, assume in stock if we found price information
-        if out_of_stock:
-            result['in_stock'] = False
-        elif has_add_to_cart:
-            result['in_stock'] = True
-        else:
-            # Fallback: if we found a price, assume it's in stock
-            result['in_stock'] = result['price'] is not None
-        
+        # Clean up title if needed
+        if result['title']:
+            # Remove excessive whitespace and newlines
+            result['title'] = ' '.join(result['title'].split())
+            
+            # If the title is too long, truncate it
+            if len(result['title']) > 200:
+                result['title'] = result['title'][:197] + '...'
+                
         return result
