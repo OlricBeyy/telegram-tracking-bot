@@ -5,6 +5,7 @@ import os
 import logging
 import traceback
 from datetime import datetime, timedelta
+from urllib.parse import urlparse
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -14,7 +15,7 @@ from telegram.ext import (
 
 from database import Database
 from scraper import ProductScraper
-from config import STORES, HEADERS, PRODUCT_CHECK_INTERVAL_MINUTES
+from config import STORES, HEADERS, PRODUCT_CHECK_INTERVAL_MINUTES, ADMIN_USER_ID, MSG_UNAUTHORIZED, MSG_ADMIN_ONLY, GENERIC_STORE_ID
 
 # Configure logger for this module
 logging.basicConfig(
@@ -56,6 +57,17 @@ class TelegramBot:
         self.dispatcher.add_handler(CommandHandler("help", self._help_command))
         self.dispatcher.add_handler(CommandHandler("list", self._list_command))
         self.dispatcher.add_handler(CommandHandler("reboot", self._reboot_command))
+        self.dispatcher.add_handler(CommandHandler("authorize", self._authorize_command))
+        
+        # Direct URL handler - must be before the conversation handler
+        # This handles URLs directly sent to the bot to track products
+        url_pattern = r'^https?://[^\s]+$'
+        self.dispatcher.add_handler(
+            MessageHandler(
+                Filters.text & ~Filters.command & Filters.regex(url_pattern),
+                self._direct_url_handler
+            )
+        )
         
         # Track product conversation flow
         conv_handler = ConversationHandler(
@@ -78,6 +90,7 @@ class TelegramBot:
         # Product action handlers
         self.dispatcher.add_handler(CallbackQueryHandler(self._remove_product, pattern=r'^remove_\d+$'))
         self.dispatcher.add_handler(CallbackQueryHandler(self._check_product, pattern=r'^check_\d+$'))
+        self.dispatcher.add_handler(CallbackQueryHandler(self._confirm_direct_product, pattern=r'^confirm_direct_(yes|no)$'))
         
         # Error handler
         self.dispatcher.add_error_handler(self._error_handler)
@@ -85,32 +98,63 @@ class TelegramBot:
     def _start_command(self, update: Update, context: CallbackContext) -> None:
         """Handle the /start command - introduce the bot and its functions"""
         user = update.effective_user
-        update.message.reply_html(
-            f"👋 Merhaba {user.mention_html()}!\n\n"
-            f"🔍 Ben bir ürün takip botuyum. Favori mağazalarınızdaki ürünlerin "
-            f"fiyat değişimlerini ve stok durumlarını takip edebilirsiniz.\n\n"
-            f"🛠 Komutlar:\n"
-            f"/track - Yeni bir ürün takibi başlat\n"
-            f"/list - Takip ettiğiniz ürünleri listele\n"
-            f"/help - Yardım menüsü\n"
-            f"/reboot - Botu yeniden başlat\n\n"
-            f"Hadi başlayalım! Takip etmek istediğiniz bir ürün için /track komutunu kullanın."
-        )
         
-        # Ensure user exists in database
+        # Ensure user exists in database - check for authorization
         self.db.add_user(update.effective_user.id)
+        
+        # Check if user is authorized to use the bot
+        if not self.db.is_authorized(user.id) and not self.db.is_admin(user.id):
+            update.message.reply_text(MSG_UNAUTHORIZED)
+            logger.warning(f"Unauthorized access attempt by user {user.id}")
+            return
+            
+        # User is authorized or admin
+        is_admin = self.db.is_admin(user.id)
+        
+        admin_commands = ""
+        if is_admin:
+            admin_commands = f"👑 *Admin Komutları:*\n" \
+                            f"/reboot - Botu yeniden başlat\n" \
+                            f"/authorize - Yeni kullanıcı ekle/yetkisi değiştir\n\n"
+        
+        # Customize message for girlfriend
+        if not is_admin:
+            update.message.reply_markdown(
+                f"💖 İyi günler aşkım, ne yapmak istersin?\n\n"
+                f"🛠 *Komutlar:*\n"
+                f"/track - Yeni bir ürün takibi başlat\n"
+                f"/list - Takip ettiğin ürünleri listele\n"
+                f"/help - Yardım menüsü\n\n"
+                f"Takip etmek istediğin bir ürün için doğrudan link gönderebilir veya /track komutunu kullanabilirsin."
+            )
+        else:
+            update.message.reply_markdown(
+                f"👋 Merhaba {user.first_name}!\n\n"
+                f"🛠 *Komutlar:*\n"
+                f"/track - Yeni bir ürün takibi başlat\n"
+                f"/list - Takip ettiğin ürünleri listele\n"
+                f"/help - Yardım menüsü\n"
+                f"{admin_commands}"
+                f"Takip etmek istediğin bir ürün için doğrudan link gönderebilir veya /track komutunu kullanabilirsin."
+            )
         
     def _reboot_command(self, update: Update, context: CallbackContext) -> None:
         """Handle the /reboot command - restart the bot when there are issues"""
         user = update.effective_user
         
-        # Only allow admins to reboot the bot (you can modify this restriction)
+        # Check if user is admin
+        if not self.db.is_admin(user.id):
+            update.message.reply_text(MSG_ADMIN_ONLY)
+            logger.warning(f"Unauthorized reboot attempt by user {user.id}")
+            return
+        
+        # User is admin, proceed with reboot
         update.message.reply_text(
             "🔄 Bot yeniden başlatılıyor...\n\n"
             "Bu işlem birkaç saniye sürebilir. Lütfen bekleyin."
         )
         
-        logger.info(f"Bot reboot requested by user {user.id}")
+        logger.info(f"Bot reboot requested by admin user {user.id}")
         
         # Schedule the reboot to occur after sending the message
         def _do_reboot():
@@ -128,26 +172,45 @@ class TelegramBot:
 
     def _help_command(self, update: Update, context: CallbackContext) -> None:
         """Handle the /help command - display help information"""
-        update.message.reply_text(
+        user = update.effective_user
+        is_admin = self.db.is_admin(user.id)
+        
+        admin_commands = ""
+        if is_admin:
+            admin_commands = "*Admin Komutları:*\n" \
+                           "/reboot - Botu yeniden başlat\n" \
+                           "/authorize - Yeni kullanıcı ekle/yetkisi değiştir\n\n"
+        
+        update.message.reply_markdown(
             "📘 *Bot Kullanım Rehberi*\n\n"
             "*Komutlar:*\n"
             "/start - Botu başlat\n"
             "/track - Yeni bir ürün takibi başlat\n"
             "/list - Takip ettiğiniz ürünleri listele\n"
             "/help - Bu yardım mesajını göster\n"
-            "/reboot - Botu yeniden başlat (sorun yaşadığınızda)\n\n"
+            f"{admin_commands}"
             "*Ürün Takibi Nasıl Çalışır:*\n"
+            "1. Herhangi bir e-ticaret sitesinden ürün linkini doğrudan sohbete gönderin\n"
+            "   *VEYA*\n"
             "1. /track komutunu kullanın\n"
             "2. Listeden bir mağaza seçin\n"
             "3. Takip etmek istediğiniz ürünün URL'sini gönderin\n"
             "4. Bilgileri onaylayın\n\n"
-            "*Desteklenen Mağazalar:*\n" + 
-            "\n".join(f"• {store['name']}" for store in STORES),
-            parse_mode='Markdown'
+            "*Desteklenen Özel Mağaza Özellikleri:*\n" + 
+            "\n".join(f"• {store['name']}" for store in [s for s in STORES if s['id'] != GENERIC_STORE_ID]) + 
+            "\n\n*Not:* Diğer tüm e-ticaret sitelerinden de ürün takibi yapabilirsiniz!"
         )
 
     def _track_command(self, update: Update, context: CallbackContext) -> int:
         """Start the product tracking conversation flow"""
+        user = update.effective_user
+        
+        # Check if user is authorized
+        if not self.db.is_authorized(user.id) and not self.db.is_admin(user.id):
+            update.message.reply_text(MSG_UNAUTHORIZED)
+            logger.warning(f"Unauthorized tracking attempt by user {user.id}")
+            return ConversationHandler.END
+            
         # Create keyboard with store options
         keyboard = []
         for store in STORES:
@@ -194,8 +257,24 @@ class TelegramBot:
         update.message.reply_text("Ürün bilgileri alınıyor, lütfen bekleyin...")
         
         try:
-            # Get product info using scraper
-            product_info = self.scraper.get_product_info(store_id, url)
+            # Check if we need to use generic scraper for unsupported sites
+            if store_id == GENERIC_STORE_ID:
+                # Use generic scraper
+                product_info = self.scraper.get_product_info(GENERIC_STORE_ID, url)
+            else:
+                # Verify URL matches store domain
+                store = next((s for s in STORES if s['id'] == store_id), None)
+                if store and store['domain']:
+                    parsed_url = urlparse(url)
+                    if store['domain'] not in parsed_url.netloc:
+                        update.message.reply_text(
+                            f"⚠️ Girdiğiniz URL {store['name']} mağazasına ait değil gibi görünüyor.\n\n"
+                            f"Lütfen {store['domain']} adresinden bir ürün URL'si girin veya 'Diğer Site' seçeneğiyle herhangi bir siteyi deneyebilirsiniz."
+                        )
+                        return ConversationHandler.END
+                
+                # Get product info using scraper
+                product_info = self.scraper.get_product_info(store_id, url)
             
             if not product_info:
                 update.message.reply_text(
@@ -293,7 +372,16 @@ class TelegramBot:
 
     def _list_command(self, update: Update, context: CallbackContext) -> None:
         """List all tracked products for the user"""
-        user_id = update.effective_user.id
+        user = update.effective_user
+        
+        # Check if user is authorized
+        if not self.db.is_authorized(user.id) and not self.db.is_admin(user.id):
+            update.message.reply_text(MSG_UNAUTHORIZED)
+            logger.warning(f"Unauthorized list attempt by user {user.id}")
+            return
+            
+        # Get user's products
+        user_id = user.id
         products = self.db.get_user_products(user_id)
         
         if not products:
@@ -363,6 +451,154 @@ class TelegramBot:
                 "⚠️ Ürün kaldırılırken bir hata oluştu. Lütfen tekrar deneyin."
             )
 
+    def _direct_url_handler(self, update: Update, context: CallbackContext) -> None:
+        """Handle direct URL messages sent to the bot for product tracking"""
+        user = update.effective_user
+        url = update.message.text.strip()
+        
+        # Check if user is authorized
+        if not self.db.is_authorized(user.id) and not self.db.is_admin(user.id):
+            update.message.reply_text(MSG_UNAUTHORIZED)
+            logger.warning(f"Unauthorized direct URL tracking attempt by user {user.id}")
+            return
+        
+        update.message.reply_text("Ürün bilgileri alınıyor, lütfen bekleyin...")
+        
+        try:
+            # Always use generic scraper for direct URLs
+            product_info = self.scraper.get_product_info(GENERIC_STORE_ID, url)
+            
+            if not product_info:
+                update.message.reply_text(
+                    "⚠️ Bu URL'den ürün bilgilerini alamadım. Lütfen URL'i kontrol edip tekrar deneyin."
+                )
+                return
+            
+            # Show product info and ask for confirmation
+            keyboard = [
+                [
+                    InlineKeyboardButton("✓ Evet", callback_data="confirm_direct_yes"),
+                    InlineKeyboardButton("✗ Hayır", callback_data="confirm_direct_no")
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            # Format price with currency
+            price_formatted = f"{product_info['price']} TL" if product_info['price'] else "Fiyat bilgisi alınamadı"
+            
+            # Store the information in user_data for later use
+            context.user_data['direct_url'] = url
+            context.user_data['direct_product_info'] = product_info
+            
+            update.message.reply_text(
+                f"*Ürün Bilgileri:*\n\n"
+                f"📌 *İsim:* {product_info['title']}\n"
+                f"💰 *Fiyat:* {price_formatted}\n"
+                f"🏪 *Stok Durumu:* {'✅ Stokta' if product_info['in_stock'] else '❌ Stokta değil'}\n\n"
+                f"Bu ürünü takip listesine eklemek istiyor musunuz?",
+                reply_markup=reply_markup,
+                parse_mode='Markdown'
+            )
+            
+        except Exception as e:
+            logger.error(f"Error processing direct URL: {e}", exc_info=True)
+            update.message.reply_text(
+                "⚠️ Ürün bilgilerini alırken bir hata oluştu. Lütfen geçerli bir URL girdiğinizden emin olun ve tekrar deneyin."
+            )
+            
+    def _confirm_direct_product(self, update: Update, context: CallbackContext) -> None:
+        """Handle confirmation for direct URL product tracking"""
+        query = update.callback_query
+        query.answer()
+        
+        user_choice = query.data.split('_')[2]  # confirm_direct_yes/no -> yes/no
+        
+        if user_choice == 'yes':
+            try:
+                # Get data from context
+                url = context.user_data.get('direct_url')
+                product_info = context.user_data.get('direct_product_info')
+                
+                if not url or not product_info:
+                    query.edit_message_text(
+                        "⚠️ İşlem zaman aşımına uğradı. Lütfen linki tekrar gönderin."
+                    )
+                    context.user_data.clear()
+                    return
+                
+                # Add product to database using generic store
+                product_id = self.db.add_product(
+                    user_id=update.effective_user.id,
+                    store_id=GENERIC_STORE_ID,
+                    url=url,
+                    title=product_info['title'],
+                    price=product_info['price'],
+                    in_stock=product_info['in_stock']
+                )
+                
+                query.edit_message_text(
+                    f"✅ *{product_info['title']}* ürünü başarıyla takip listesine eklendi.\n\n"
+                    f"Fiyat veya stok durumu değiştiğinde sizi bilgilendireceğim!\n\n"
+                    f"Takip ettiğiniz tüm ürünleri görmek için /list komutunu kullanabilirsiniz.",
+                    parse_mode='Markdown'
+                )
+                
+            except Exception as e:
+                logger.error(f"Error adding direct product: {e}", exc_info=True)
+                query.edit_message_text(
+                    "⚠️ Ürün eklenirken bir hata oluştu. Lütfen tekrar deneyin."
+                )
+        else:
+            query.edit_message_text(
+                "İşlem iptal edildi. Başka bir ürün eklemek istediğinizde doğrudan linki gönderebilir veya /track komutunu kullanabilirsiniz."
+            )
+        
+        # Clear user data
+        context.user_data.clear()
+    
+    def _authorize_command(self, update: Update, context: CallbackContext) -> None:
+        """Handle the /authorize command - add or modify user authorization"""
+        user = update.effective_user
+        
+        # Check if user is admin
+        if not self.db.is_admin(user.id):
+            update.message.reply_text(MSG_ADMIN_ONLY)
+            logger.warning(f"Unauthorized authorize attempt by user {user.id}")
+            return
+        
+        # Check if command has required arguments
+        if not context.args or len(context.args) < 2:
+            update.message.reply_text(
+                "⚠️ Eksik parametreler.\n\n"
+                "Kullanım: /authorize <user_id> <durum>\n"
+                "Örnek: /authorize 123456789 true"
+            )
+            return
+        
+        # Parse arguments
+        try:
+            target_user_id = int(context.args[0])
+            is_authorized = context.args[1].lower() in ["true", "1", "yes", "evet"]
+            
+            # Update user authorization
+            success = self.db.set_user_authorization(target_user_id, is_authorized)
+            
+            if success:
+                status_text = "yetkilendirildi" if is_authorized else "yetkisi kaldırıldı"
+                update.message.reply_text(
+                    f"✅ Kullanıcı {target_user_id} başarıyla {status_text}."
+                )
+                logger.info(f"Admin {user.id} authorized user {target_user_id} as {is_authorized}")
+            else:
+                update.message.reply_text(
+                    f"⚠️ Kullanıcı {target_user_id} yetkilendirilemedi. Kullanıcının önce botu başlatması gerekebilir."
+                )
+        except ValueError:
+            update.message.reply_text("⚠️ Geçersiz kullanıcı ID'si. Lütfen sayısal bir değer girin.")
+        except Exception as e:
+            logger.error(f"Error authorizing user: {e}", exc_info=True)
+            update.message.reply_text(f"⚠️ İşlem sırasında bir hata oluştu: {str(e)}")
+            
     def _check_product(self, update: Update, context: CallbackContext) -> None:
         """Check current status of a product"""
         query = update.callback_query

@@ -8,7 +8,7 @@ import random
 import requests
 from bs4 import BeautifulSoup
 
-from config import STORES
+from config import STORES, GENERIC_STORE_ID
 
 # Configure logger for this module
 logger = logging.getLogger(__name__)
@@ -63,6 +63,8 @@ class ProductScraper:
                 return self._scrape_teknosa(soup, url)
             elif store_id == 'mediamarkt':
                 return self._scrape_mediamarkt(soup, url)
+            elif store_id == GENERIC_STORE_ID:
+                return self._scrape_generic(soup, url)
             else:
                 logger.warning(f"No scraper implemented for store ID {store_id}")
                 return None
@@ -327,5 +329,110 @@ class ProductScraper:
         else:
             add_to_cart = soup.select_one('.add-to-cart')
             result['in_stock'] = add_to_cart is not None
+        
+        return result
+        
+    def _scrape_generic(self, soup: BeautifulSoup, url: str) -> Dict[str, Any]:
+        """
+        Generic scraper that works with most e-commerce websites
+        
+        Args:
+            soup: BeautifulSoup object of the product page
+            url: URL of the product page
+            
+        Returns:
+            Dictionary with product information
+        """
+        # Initialize result
+        result = {
+            'title': None,
+            'price': None,
+            'in_stock': False
+        }
+        
+        # Try to find a title - look for common patterns in e-commerce sites
+        title_candidates = [
+            soup.select_one('h1'),  # Most sites use h1 for product title
+            soup.select_one('[class*="title" i]'),  # Classes containing "title"
+            soup.select_one('[class*="product-name" i]'),  # Classes containing "product-name"
+            soup.select_one('[class*="product" i]'),  # Classes containing "product"
+            soup.select_one('title')  # Last resort: use page title
+        ]
+        
+        for candidate in title_candidates:
+            if candidate and candidate.text.strip():
+                result['title'] = candidate.text.strip()
+                break
+        
+        # If no title found, use URL as fallback
+        if not result['title']:
+            from urllib.parse import urlparse
+            parsed_url = urlparse(url)
+            path_parts = parsed_url.path.split('/')
+            # Try to get the last meaningful part of the path
+            for part in reversed(path_parts):
+                if part and part not in ['', '.html', '.htm']:
+                    result['title'] = part.replace('-', ' ').replace('_', ' ').capitalize()
+                    break
+        
+        # Look for price - common patterns in e-commerce sites
+        price_candidates = [
+            soup.select_one('[class*="price" i]:not([class*="old" i]):not([class*="regular" i])'),  # Classes containing "price" but not "old" or "regular"
+            soup.select_one('[id*="price" i]'),  # IDs containing "price"
+            soup.select_one('[class*="current" i][class*="price" i]'),  # Classes containing both "current" and "price"
+            soup.select_one('meta[property="product:price:amount"]')  # Open Graph price meta tag
+        ]
+        
+        for candidate in price_candidates:
+            if candidate:
+                # If it's a meta tag, use the content attribute
+                if candidate.name == 'meta' and candidate.get('content'):
+                    price_text = candidate.get('content')
+                else:
+                    price_text = candidate.text
+                
+                if price_text:
+                    # Ensure price_text is a string
+                    if isinstance(price_text, str):
+                        result['price'] = self._clean_price(price_text)
+                        if result['price'] is not None:
+                            break
+        
+        # Look for stock status
+        # Method 1: Look for out of stock indicators
+        out_of_stock_indicators = [
+            'out of stock',
+            'tükendi',
+            'sold out',
+            'stokta yok',
+            'stokta bulunmamaktadır',
+            'ürün geçici olarak temin edilemiyor'
+        ]
+        
+        page_text = soup.get_text().lower()
+        out_of_stock = any(indicator in page_text for indicator in out_of_stock_indicators)
+        
+        # Method 2: Look for add to cart buttons
+        add_to_cart_candidates = [
+            soup.select_one('[class*="add-to-cart" i]'),
+            soup.select_one('[class*="addtocart" i]'),
+            soup.select_one('[class*="add-to-basket" i]'),
+            soup.select_one('[class*="addtobasket" i]'),
+            soup.select_one('[id*="add-to-cart" i]'),
+            soup.select_one('[id*="addtocart" i]')
+        ]
+        
+        has_add_to_cart = any(candidate is not None for candidate in add_to_cart_candidates)
+        
+        # If there's no clear out-of-stock message and there's an add to cart button, assume in stock
+        # If we see an out-of-stock message, definitely out of stock
+        # Otherwise, assume in stock if we found price information
+        if out_of_stock:
+            result['in_stock'] = False
+        elif has_add_to_cart:
+            result['in_stock'] = True
+        else:
+            # Fallback: if we found a price, assume it's in stock
+            result['in_stock'] = result['price'] is not None
         
         return result
