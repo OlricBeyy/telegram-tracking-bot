@@ -26,14 +26,9 @@ STORES = [
         'domain': 'amazon.com.tr'
     },
     {
-        'id': 'teknosa',
-        'name': 'Teknosa',
-        'domain': 'teknosa.com'
-    },
-    {
-        'id': 'mediamarkt',
-        'name': 'Media Markt',
-        'domain': 'mediamarkt.com.tr'
+        'id': 'pandora',
+        'name': 'Pandora',
+        'domain': 'pandora.net'
     },
     {
         'id': 'generic',

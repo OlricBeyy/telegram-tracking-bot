@@ -131,9 +131,9 @@ class ProductScraper:
                 elif store_id == 'amazon':
                     return self._scrape_amazon(soup, url)
                 elif store_id == 'teknosa':
-                    return self._scrape_teknosa(soup, url)
-                elif store_id == 'mediamarkt':
-                    return self._scrape_mediamarkt(soup, url)
+                    return self._scrape_pandora(soup, url)
+                elif store_id == 'pandora':
+                    return self._scrape_pandora(soup, url)
                 elif store_id == GENERIC_STORE_ID:
                     # For generic store, if scraping fails, at least return a basic result
                     result = self._scrape_generic(soup, url)
@@ -346,9 +346,9 @@ class ProductScraper:
         
         return result
     
-    def _scrape_teknosa(self, soup: BeautifulSoup, url: str) -> Dict[str, Any]:
+    def _scrape_pandora(self, soup: BeautifulSoup, url: str) -> Dict[str, Any]:
         """
-        Scrape product information from Teknosa
+        Scrape product information from Pandora jewelry site
         
         Args:
             soup: BeautifulSoup object of the product page
@@ -357,29 +357,130 @@ class ProductScraper:
         Returns:
             Dictionary with product information
         """
-        # Initialize result
         result = {
             'title': None,
             'price': None,
             'in_stock': False
         }
         
-        # Extract title
-        title_tag = soup.select_one('h1.pdp-title')
-        if title_tag:
-            result['title'] = title_tag.text.strip()
-        
-        # Extract price
-        price_tag = soup.select_one('.product-price')
-        if price_tag:
-            result['price'] = self._clean_price(price_tag.text)
-        
-        # Check stock status
-        sold_out = soup.select_one('.add-to-cart--out-of-stock')
-        add_to_cart = soup.select_one('.add-to-cart:not(.add-to-cart--out-of-stock)')
-        
-        # If there's no sold out message and add to cart button exists, product is in stock
-        result['in_stock'] = sold_out is None and add_to_cart is not None
+        try:
+            # Extract title - looking for common product title selectors
+            title_candidates = [
+                soup.select_one('h1.product-name'),
+                soup.select_one('h1.product-title'),
+                soup.select_one('h1.pdp-title'),
+                soup.select_one('h1[itemprop="name"]'),
+                soup.select_one('div.product-title h1'),
+                # Meta title as fallback
+                soup.select_one('meta[property="og:title"]'),
+                soup.select_one('meta[name="title"]')
+            ]
+            
+            for title_elem in title_candidates:
+                if title_elem:
+                    if title_elem.name == 'meta':
+                        result['title'] = title_elem.get('content')
+                    else:
+                        result['title'] = title_elem.text.strip()
+                    break
+            
+            # Extract price - looking for common price selectors
+            price_candidates = [
+                soup.select_one('span.price-sales'),
+                soup.select_one('span.current-price'),
+                soup.select_one('span.product-price'),
+                soup.select_one('div.product-price span'),
+                soup.select_one('[itemprop="price"]'),
+                soup.select_one('p.price'),
+                # Meta price as fallback
+                soup.select_one('meta[property="product:price:amount"]'),
+                soup.select_one('meta[property="og:price:amount"]')
+            ]
+            
+            for price_elem in price_candidates:
+                if price_elem:
+                    if price_elem.name == 'meta':
+                        price_text = price_elem.get('content')
+                    else:
+                        price_text = price_elem.text.strip()
+                        
+                    # Remove currency symbols and format properly
+                    price_text = price_text.replace('TL', '').replace('₺', '').replace('TRY', '')
+                    price_text = price_text.replace('.', '').replace(',', '.').strip()
+                    result['price'] = self._clean_price(price_text)
+                    break
+            
+            # Check for structured data (JSON-LD) which often contains accurate price and stock info
+            json_ld = None
+            for script in soup.find_all('script', type='application/ld+json'):
+                try:
+                    data = json.loads(script.string)
+                    if '@type' in data and data['@type'] in ['Product', 'JewelryStore', 'Offer']:
+                        json_ld = data
+                        break
+                    elif '@graph' in data:
+                        for item in data['@graph']:
+                            if '@type' in item and item['@type'] in ['Product', 'JewelryStore', 'Offer']:
+                                json_ld = item
+                                break
+                except (json.JSONDecodeError, TypeError):
+                    continue
+            
+            if json_ld:
+                # Try to get price from JSON-LD
+                if not result['price'] and 'offers' in json_ld:
+                    offers = json_ld['offers']
+                    if isinstance(offers, dict) and 'price' in offers:
+                        result['price'] = float(offers['price'])
+                    elif isinstance(offers, list) and offers and 'price' in offers[0]:
+                        result['price'] = float(offers[0]['price'])
+                
+                # Try to get stock status from JSON-LD
+                if 'offers' in json_ld:
+                    offers = json_ld['offers']
+                    if isinstance(offers, dict) and 'availability' in offers:
+                        result['in_stock'] = 'InStock' in offers['availability']
+                    elif isinstance(offers, list) and offers and 'availability' in offers[0]:
+                        result['in_stock'] = 'InStock' in offers[0]['availability']
+            
+            # If stock status wasn't found in JSON-LD, check using various selectors
+            if result['in_stock'] is False:
+                # Check for "add to cart" button or similar
+                add_to_cart_selectors = [
+                    'button.add-to-cart',
+                    'button.add-to-bag',
+                    'button.add-to-basket',
+                    'button.pdp-button',
+                    'button[data-button-action="add-to-cart"]'
+                ]
+                
+                for selector in add_to_cart_selectors:
+                    button = soup.select_one(selector)
+                    if button and not button.get('disabled'):
+                        result['in_stock'] = True
+                        break
+                
+                # Check for out of stock messages
+                out_of_stock_selectors = [
+                    '.product-availability',
+                    '.stock-availability',
+                    '.pdp-availability',
+                    '.availability',
+                    '.stock-status'
+                ]
+                
+                for selector in out_of_stock_selectors:
+                    elem = soup.select_one(selector)
+                    if elem and any(term in elem.text.lower() for term in ['sold out', 'out of stock', 'tükendi', 'stokta yok']):
+                        result['in_stock'] = False
+                        break
+            
+            # Fallback: if we found a price, assume it's in stock
+            if result['in_stock'] is False and result['price'] is not None:
+                result['in_stock'] = True
+                
+        except Exception as e:
+            logger.error(f"Error scraping Pandora product: {e}", exc_info=True)
         
         return result
     

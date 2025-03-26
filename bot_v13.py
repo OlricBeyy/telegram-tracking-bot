@@ -83,9 +83,15 @@ class TelegramBot:
                     CallbackQueryHandler(self._confirm_product, pattern=r'^confirm_(yes|no)$')
                 ]
             },
-            fallbacks=[CommandHandler("cancel", self._cancel_tracking)],
+            fallbacks=[
+                CommandHandler("cancel", self._cancel_tracking),
+                CommandHandler("start", self._start_command),
+                CommandHandler("track", self._track_command)
+            ],
             per_message=False,
-            per_chat=True
+            per_chat=True,
+            allow_reentry=True,          # Yeniden girişe izin ver
+            conversation_timeout=300     # 5 dakika sonra konuşmayı otomatik sonlandır
         )
         self.dispatcher.add_handler(conv_handler)
         
@@ -366,8 +372,19 @@ class TelegramBot:
 
     def _cancel_tracking(self, update: Update, context: CallbackContext) -> int:
         """Cancel the product tracking conversation"""
+        if update.message:
+            update.message.reply_text(
+                "Ürün takip işlemi iptal edildi. Ana menüye dönmek için /start komutunu kullanabilirsiniz."
+            )
+        # Temizle ve sonlandır
+        context.user_data.clear()
+        return ConversationHandler.END
+        
+    def _cancel_if_confused(self, update: Update, context: CallbackContext) -> int:
+        """Fallback handler for handling unexpected input during conversations"""
         update.message.reply_text(
-            "Ürün takip işlemi iptal edildi. Ana menüye dönmek için /start komutunu kullanabilirsiniz."
+            "🤔 Ne söylemeye çalıştığınızı anlayamadım. İşlem iptal edildi.\n\n"
+            "Yeni bir ürün ekleme işlemi başlatmak için /track komutunu kullanabilirsiniz."
         )
         context.user_data.clear()
         return ConversationHandler.END
