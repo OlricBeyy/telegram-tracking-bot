@@ -7,8 +7,8 @@ from datetime import datetime, timedelta
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application, CommandHandler, MessageHandler, CallbackQueryHandler,
-    ContextTypes, filters, ConversationHandler
+    Updater, CommandHandler, MessageHandler, CallbackQueryHandler,
+    CallbackContext, Filters, ConversationHandler
 )
 
 from database import Database
