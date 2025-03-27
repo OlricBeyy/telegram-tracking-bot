@@ -27,7 +27,7 @@ Bu bot, Türk e-ticaret sitelerindeki ürünlerin stok ve fiyat bilgilerini taki
 - `/track` - Yeni bir ürün takip etmeye başlar
 - `/list` - Takip ettiğiniz ürünleri listeler
 - `/reboot` - Botu yeniden başlatır (sorun yaşadığınızda kullanın) (admin)
-- `/authorize` - Botu kullabilecek kişileri eklemek için kullanılır (admin)
+- `/authorize` - Botu kullanabilecek kişileri eklemek için kullanılır (admin)
 
 ## Teknik Bilgiler
 
