@@ -17,8 +17,8 @@ Bu bot, Türk e-ticaret sitelerindeki ürünlerin stok ve fiyat bilgilerini taki
 - Hepsiburada
 - N11
 - Amazon (TR)
-- Teknosa
-- MediaMarkt
+- Pandora
+- Rossmann
 
 ## Komutlar
 
@@ -26,7 +26,8 @@ Bu bot, Türk e-ticaret sitelerindeki ürünlerin stok ve fiyat bilgilerini taki
 - `/help` - Yardım mesajını görüntüler
 - `/track` - Yeni bir ürün takip etmeye başlar
 - `/list` - Takip ettiğiniz ürünleri listeler
-- `/reboot` - Botu yeniden başlatır (sorun yaşadığınızda kullanın)
+- `/reboot` - Botu yeniden başlatır (sorun yaşadığınızda kullanın) (admin)
+- `/authorize` - Botu kullabilecek kişileri eklemek için kullanılır (admin)
 
 ## Teknik Bilgiler
 
