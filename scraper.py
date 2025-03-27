@@ -370,6 +370,22 @@ class ProductScraper:
         }
         
         try:
+            # Extract from URL first to handle 403 errors
+            from urllib.parse import urlparse
+            parsed_url = urlparse(url)
+            path_parts = parsed_url.path.split('/')
+            
+            # Get product name from URL path (second-to-last element before product code)
+            for i, part in enumerate(path_parts):
+                if part.endswith('.html') and i > 0:
+                    # Get product code from the last path element (like 393600C01.html)
+                    product_code = part.split('.')[0]  # Get part before .html
+                    
+                    # Use the element before this one as the product name
+                    product_name = path_parts[i-1].replace('-', ' ').replace('_', ' ').title()
+                    result['title'] = f"{product_name} {product_code}"
+                    break
+            
             # Extract title - looking for common product title selectors
             title_candidates = [
                 soup.select_one('h1.product-name'),
@@ -390,31 +406,57 @@ class ProductScraper:
                         result['title'] = title_elem.text.strip()
                     break
             
-            # Extract price - looking for common price selectors
-            price_candidates = [
-                soup.select_one('span.price-sales'),
-                soup.select_one('span.current-price'),
-                soup.select_one('span.product-price'),
-                soup.select_one('div.product-price span'),
-                soup.select_one('[itemprop="price"]'),
-                soup.select_one('p.price'),
-                # Meta price as fallback
-                soup.select_one('meta[property="product:price:amount"]'),
-                soup.select_one('meta[property="og:price:amount"]')
-            ]
+            # Extract price - look for all possible price indicators
+            # First, try to find JSON-LD script which often has the most accurate price
+            try:
+                for script in soup.find_all('script', type='application/ld+json'):
+                    data = json.loads(script.string)
+                    if '@type' in data and data['@type'] == 'Product' and 'offers' in data:
+                        offers = data['offers']
+                        if isinstance(offers, dict) and 'price' in offers:
+                            price = offers.get('price')
+                            if price:
+                                try:
+                                    result['price'] = float(price)
+                                    break
+                                except (ValueError, TypeError):
+                                    # Try to clean the price if it's a string
+                                    result['price'] = self._clean_price(str(price))
+                                    if result['price'] is not None:
+                                        break
+            except (json.JSONDecodeError, AttributeError):
+                pass
             
-            for price_elem in price_candidates:
-                if price_elem:
-                    if price_elem.name == 'meta':
-                        price_text = price_elem.get('content')
-                    else:
-                        price_text = price_elem.text.strip()
+            # If JSON-LD didn't work, try other price selectors
+            if result['price'] is None:
+                price_candidates = [
+                    soup.select_one('span.price-sales'),
+                    soup.select_one('span.current-price'),
+                    soup.select_one('span.product-price'),
+                    soup.select_one('div.product-price span'),
+                    soup.select_one('[itemprop="price"]'),
+                    soup.select_one('p.price'),
+                    soup.select_one('.product-price'),
+                    soup.select_one('.price-container .price'),
+                    # Meta price as fallback
+                    soup.select_one('meta[property="product:price:amount"]'),
+                    soup.select_one('meta[property="og:price:amount"]')
+                ]
+                
+                for price_elem in price_candidates:
+                    if price_elem:
+                        if price_elem.name == 'meta':
+                            price_text = price_elem.get('content')
+                        else:
+                            price_text = price_elem.text.strip()
                         
-                    # Remove currency symbols and format properly
-                    price_text = price_text.replace('TL', '').replace('₺', '').replace('TRY', '')
-                    price_text = price_text.replace('.', '').replace(',', '.').strip()
-                    result['price'] = self._clean_price(price_text)
-                    break
+                        if isinstance(price_text, str):
+                            # Remove currency symbols and format properly
+                            price_text = price_text.replace('TL', '').replace('₺', '').replace('TRY', '')
+                            price_text = price_text.replace('.', '').replace(',', '.').strip()
+                            result['price'] = self._clean_price(price_text)
+                            if result['price'] is not None:
+                                break
             
             # Check for structured data (JSON-LD) which often contains accurate price and stock info
             json_ld = None
@@ -719,11 +761,33 @@ class ProductScraper:
                 from urllib.parse import urlparse
                 parsed_url = urlparse(url)
                 path_parts = parsed_url.path.split('/')
-                # Try to get the last meaningful part of the path
-                for part in reversed(path_parts):
-                    if part and part not in ['', '.html', '.htm']:
-                        result['title'] = part.replace('-', ' ').replace('_', ' ').capitalize()
-                        break
+                
+                # Special handling for Pandora site which has product number in last element
+                if 'pandora.net' in url.lower():
+                    # Get second last element which is the actual product name
+                    for i, part in enumerate(path_parts):
+                        if part.endswith('.html') and i > 0:
+                            # Use the element before this one as the title
+                            product_name = path_parts[i-1]
+                            result['title'] = product_name.replace('-', ' ').replace('_', ' ').capitalize()
+                            break
+                    # If still no title, try other methods
+                    if not result['title']:
+                        try:
+                            # Extract product code from the last path element (like 393600C01.html)
+                            for part in reversed(path_parts):
+                                if part.endswith('.html'):
+                                    product_code = part.split('.')[0]  # Get part before .html
+                                    result['title'] = f"Pandora {product_code}"
+                                    break
+                        except:
+                            pass
+                else:
+                    # Normal handling for other sites - get last meaningful path part
+                    for part in reversed(path_parts):
+                        if part and part not in ['', '.html', '.htm']:
+                            result['title'] = part.replace('-', ' ').replace('_', ' ').capitalize()
+                            break
         
         # Look for price in HTML if not found in JSON-LD
         if result['price'] is None:
