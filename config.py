@@ -31,6 +31,11 @@ STORES = [
         'domain': 'pandora.net'
     },
     {
+        'id': 'rossmann',
+        'name': 'Rossmann',
+        'domain': 'rossmann.com.tr'
+    },
+    {
         'id': 'generic',
         'name': 'Diğer Site',
         'domain': ''  # Boş domain, herhangi bir site için kullanılacak

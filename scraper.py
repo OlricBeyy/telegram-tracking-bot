@@ -59,6 +59,10 @@ class ProductScraper:
         # Initialize response variable to None to avoid "possibly unbound" errors
         response = None
         
+        # Rotate user agent for better anti-bot evasion
+        current_ua = random.choice(self.user_agents)
+        self.session.headers.update({"User-Agent": current_ua})
+        
         # Define fallback result here at the top level
         fallback_result = {
             'title': f"Ürün ({url.split('/')[-1]})",
@@ -134,6 +138,8 @@ class ProductScraper:
                     return self._scrape_pandora(soup, url)
                 elif store_id == 'pandora':
                     return self._scrape_pandora(soup, url)
+                elif store_id == 'rossmann':
+                    return self._scrape_rossmann(soup, url)
                 elif store_id == GENERIC_STORE_ID:
                     # For generic store, if scraping fails, at least return a basic result
                     result = self._scrape_generic(soup, url)
@@ -484,9 +490,9 @@ class ProductScraper:
         
         return result
     
-    def _scrape_mediamarkt(self, soup: BeautifulSoup, url: str) -> Dict[str, Any]:
+    def _scrape_rossmann(self, soup: BeautifulSoup, url: str) -> Dict[str, Any]:
         """
-        Scrape product information from MediaMarkt
+        Scrape product information from Rossmann
         
         Args:
             soup: BeautifulSoup object of the product page
@@ -502,23 +508,107 @@ class ProductScraper:
             'in_stock': False
         }
         
-        # Extract title
-        title_tag = soup.select_one('h1.product-title')
-        if title_tag:
-            result['title'] = title_tag.text.strip()
+        try:
+            # Extract title - try multiple selectors
+            title_candidates = [
+                soup.select_one('h1.product-name'),
+                soup.select_one('h1.product-title'),
+                soup.select_one('h1.pdp-title'),
+                soup.select_one('div.product-title'),
+                soup.select_one('h1[itemprop="name"]'),
+                soup.select_one('meta[property="og:title"]')
+            ]
+            
+            for title_elem in title_candidates:
+                if title_elem:
+                    if title_elem.name == 'meta':
+                        result['title'] = title_elem.get('content')
+                    else:
+                        result['title'] = title_elem.text.strip()
+                    break
+                    
+            # Try getting title from JSON-LD first (most reliable)
+            for script in soup.find_all('script', type='application/ld+json'):
+                try:
+                    data = json.loads(script.string)
+                    if isinstance(data, dict) and data.get('@type') == 'Product' and data.get('name'):
+                        result['title'] = data.get('name')
+                        
+                        # While we're here, also try to get price and stock status
+                        if data.get('offers'):
+                            offers = data.get('offers')
+                            if isinstance(offers, dict):
+                                if offers.get('price'):
+                                    result['price'] = float(offers.get('price'))
+                                if offers.get('availability'):
+                                    result['in_stock'] = 'InStock' in offers.get('availability')
+                        break
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    continue
+            
+            # If price not found in JSON-LD, look in HTML
+            if result['price'] is None:
+                price_candidates = [
+                    soup.select_one('.price-container .price'),
+                    soup.select_one('.product-price'),
+                    soup.select_one('.price-box .price'),
+                    soup.select_one('[itemprop="price"]'),
+                    soup.select_one('.product-detail-price'),
+                    soup.select_one('meta[property="product:price:amount"]')
+                ]
+                
+                for price_elem in price_candidates:
+                    if price_elem:
+                        if price_elem.name == 'meta':
+                            price_text = price_elem.get('content')
+                        else:
+                            price_text = price_elem.text.strip()
+                            
+                        # Clean price text
+                        if isinstance(price_text, str):
+                            # Handle different currency formats
+                            price_text = price_text.replace('TL', '').replace('₺', '').replace('TRY', '')
+                            price_text = price_text.replace('.', '').replace(',', '.').strip()
+                            result['price'] = self._clean_price(price_text)
+                            if result['price'] is not None:
+                                break
+            
+            # Check stock status if not already determined from JSON-LD
+            if result['in_stock'] is False:
+                # Check for add to cart button
+                add_to_cart_selectors = [
+                    'button.add-to-cart',
+                    'button.btn-cart',
+                    'button[id*="add-to-cart"]',
+                    'button.btn-add-to-basket',
+                    'button.add-to-basket'
+                ]
+                
+                for selector in add_to_cart_selectors:
+                    button = soup.select_one(selector)
+                    if button and not button.get('disabled'):
+                        result['in_stock'] = True
+                        break
+                
+                # Check for out of stock messages
+                out_of_stock_indicators = [
+                    'out of stock',
+                    'tükendi',
+                    'stokta yok',
+                    'ürün geçici olarak temin edilemiyor'
+                ]
+                
+                for elem in soup.select('.availability, .stock-status, .product-availability'):
+                    if elem and any(indicator in elem.text.lower() for indicator in out_of_stock_indicators):
+                        result['in_stock'] = False
+                        break
+                
+                # If we have a price but couldn't determine stock status, assume it's in stock
+                if result['in_stock'] is False and result['price'] is not None:
+                    result['in_stock'] = True
         
-        # Extract price
-        price_tag = soup.select_one('.price')
-        if price_tag:
-            result['price'] = self._clean_price(price_tag.text)
-        
-        # Check stock status
-        availability = soup.select_one('.availability')
-        if availability:
-            result['in_stock'] = 'stokta' in availability.text.lower() or 'in stock' in availability.text.lower()
-        else:
-            add_to_cart = soup.select_one('.add-to-cart')
-            result['in_stock'] = add_to_cart is not None
+        except Exception as e:
+            logger.error(f"Error scraping Rossmann product: {e}", exc_info=True)
         
         return result
         
